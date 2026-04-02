@@ -1,0 +1,319 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <title>RouterCut Log</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}"/>
+</head>
+<body>
+<header class="top">
+  <h1>RouterCut 로그 뷰어</h1>
+  <div class="toolbar">
+    <label class="field">장비(IP)
+      <select id="hostSelect"></select>
+    </label>
+    <label class="field">일자(yyyyMMdd)
+      <select id="dateSelect">
+        <option value="">전체</option>
+      </select>
+    </label>
+    <label class="field">검색
+      <input id="searchInput" type="search" placeholder="바코드·모델·시간"/>
+    </label>
+    <div class="toggles">
+      <label class="toggle"><input type="checkbox" id="ngOnly"/> NG만</label>
+      <label class="toggle"><input type="checkbox" id="showImg" checked/> 이미지</label>
+    </div>
+    <button type="button" class="primary" id="btnScan">이 장비 스캔</button>
+    <button type="button" id="btnScanAll">전체 스캔</button>
+    <a class="btn" id="btnExport" href="#">엑셀</a>
+  </div>
+</header>
+
+<main>
+  <div class="stats" id="stats"></div>
+  <div id="tableHost" class="table-wrap"></div>
+
+  <section class="panel">
+    <h2>장비 등록 · 경로</h2>
+    <p style="margin:0 0 10px;font-size:0.85rem;color:var(--muted)">
+      SMB 등으로 마운트한 로컬 경로의 <strong>Result2 상위 폴더</strong>를 적습니다.
+      (예: <code>/mnt/10.56.164.91</code> 아래에 <code>Result2/20260305/Result.csv</code> 구조)
+    </p>
+    <div class="grid-form">
+      <label class="field">IP
+        <input id="newIp" type="text" placeholder="10.0.0.5"/>
+      </label>
+      <label class="field">이름
+        <input id="newName" type="text" placeholder="별칭"/>
+      </label>
+      <label class="field">로컬 마운트 경로
+        <input id="newRoot" type="text" placeholder="/mnt/장비IP"/>
+      </label>
+      <label class="field">하위 폴더(기본 Result2)
+        <input id="newSub" type="text" value="Result2"/>
+      </label>
+      <button type="button" class="primary" id="btnAddHost">추가</button>
+    </div>
+    <div class="msg" id="hostMsg"></div>
+    <div style="margin-top:12px">
+      <label class="field">선택 장비 로컬 경로 수정
+        <input id="editRoot" type="text"/>
+      </label>
+      <button type="button" id="btnSaveHost">저장</button>
+    </div>
+  </section>
+</main>
+
+<script>
+(function () {
+  const $ = (id) => document.getElementById(id);
+
+  const state = { hosts: [], columns: [], rows: [] };
+
+  async function fetchJSON(url, opt) {
+    const r = await fetch(url, opt);
+    const data = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(data.error || r.statusText);
+    return data;
+  }
+
+  async function loadHosts() {
+    state.hosts = await fetchJSON("/api/hosts");
+    const sel = $("hostSelect");
+    sel.innerHTML = state.hosts.map(h =>
+      `<option value="${h.id}">${h.ip} — ${h.name || ""}</option>`
+    ).join("");
+    const h = state.hosts.find(x => x.id === +sel.value) || state.hosts[0];
+    if (h) {
+      $("editRoot").value = h.local_root || "";
+    }
+  }
+
+  async function loadDates() {
+    const hid = $("hostSelect").value;
+    const q = hid ? `?host_id=${encodeURIComponent(hid)}` : "";
+    const dates = await fetchJSON("/api/dates" + q);
+    const ds = $("dateSelect");
+    const cur = ds.value;
+    ds.innerHTML = `<option value="">전체</option>` +
+      dates.map(d => `<option value="${d}">${d}</option>`).join("");
+    if ([...ds.options].some(o => o.value === cur)) ds.value = cur;
+  }
+
+  function queryParams() {
+    const p = new URLSearchParams();
+    const hid = $("hostSelect").value;
+    const d = $("dateSelect").value;
+    const q = $("searchInput").value.trim();
+    if (hid) p.set("host_id", hid);
+    if (d) p.set("date", d);
+    if (q) p.set("q", q);
+    if ($("ngOnly").checked) p.set("ng_only", "1");
+    p.set("pivot", "1");
+    return p;
+  }
+
+  function updateExportLink() {
+    const p = queryParams();
+    $("btnExport").href = "/api/export.xlsx?" + p.toString();
+  }
+
+  async function loadRecords() {
+    updateExportLink();
+    const host = $("tableHost");
+    host.classList.add("loading");
+    try {
+      const p = queryParams();
+      const data = await fetchJSON("/api/records?" + p.toString());
+      state.columns = data.columns || [];
+      state.rows = data.rows || [];
+      renderTable();
+      $("stats").textContent = `행 ${state.rows.length.toLocaleString()} · 피벗 컬럼 ${state.columns.length}개`;
+    } catch (e) {
+      $("stats").textContent = "오류: " + e.message;
+      host.innerHTML = "";
+    } finally {
+      host.classList.remove("loading");
+    }
+  }
+
+  function hideCols() {
+    const hide = new Set(["has_ng"]);
+    if (!$("showImg").checked) hide.add("image_file");
+    return hide;
+  }
+
+  function renderTable() {
+    const hide = hideCols();
+    const cols = state.columns.filter(c => !hide.has(c));
+    const showImage = $("showImg").checked;
+    let html = "<table class='data'><thead><tr>";
+    for (const c of cols) {
+      if (c === "image_file" && showImage) {
+        html += "<th>image</th>";
+        continue;
+      }
+      html += `<th>${escapeHtml(c)}</th>`;
+    }
+    html += "</tr></thead><tbody>";
+    for (const row of state.rows) {
+      const ng = row.has_ng;
+      html += `<tr class="${ng ? "row-ng" : ""}">`;
+      for (const c of cols) {
+        if (c === "image_file" && showImage) {
+          html += "<td>" + imageCell(row) + "</td>";
+          continue;
+        }
+        const v = row[c];
+        let cls = "";
+        if (typeof v === "string" && v === "OK") cls = "cell-ok";
+        if (typeof v === "string" && v === "NG") cls = "cell-ng";
+        html += `<td class="${cls}">${formatCell(v)}</td>`;
+      }
+      html += "</tr>";
+    }
+    html += "</tbody></table>";
+    $("tableHost").innerHTML = html;
+  }
+
+  function imageCell(row) {
+    const f = row.image_file;
+    if (!f) return "";
+    const p = new URLSearchParams({
+      host_id: String(row.host_id),
+      folder_date: row.folder_date || "",
+      file: f
+    });
+    const u = "/api/image?" + p.toString();
+    return `<img class="thumb" src="${escapeHtml(u)}" alt="" loading="lazy"
+      onerror="this.replaceWith(document.createTextNode('–'))"/>`;
+  }
+
+  function formatCell(v) {
+    if (v === null || v === undefined) return "";
+    if (typeof v === "boolean") return v ? "Y" : "";
+    return escapeHtml(String(v));
+  }
+
+  function escapeHtml(s) {
+    return s.replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;");
+  }
+
+  $("hostSelect").addEventListener("change", async () => {
+    const h = state.hosts.find(x => x.id === +$("hostSelect").value);
+    if (h) $("editRoot").value = h.local_root || "";
+    await loadDates();
+    await loadRecords();
+  });
+  $("dateSelect").addEventListener("change", loadRecords);
+  $("searchInput").addEventListener("input", debounce(loadRecords, 320));
+  $("ngOnly").addEventListener("change", loadRecords);
+  $("showImg").addEventListener("change", renderTable);
+
+  function debounce(fn, ms) {
+    let t;
+    return function () {
+ clearTimeout(t);
+      t = setTimeout(() => fn.apply(this, arguments), ms);
+    };
+  }
+
+  $("btnScan").addEventListener("click", async () => {
+    const hid = $("hostSelect").value;
+    if (!hid) return;
+    $("btnScan").disabled = true;
+    try {
+      const res = await fetchJSON(`/api/hosts/${hid}/scan`, { method: "POST" });
+      $("stats").textContent = res.ok
+        ? `스캔 완료 — 처리 ${res.rows}행 · 폴더 ${(res.folders || []).join(", ")}`
+        : "스캔 실패: " + (res.error || "");
+      await loadDates();
+      await loadRecords();
+    } catch (e) {
+      $("stats").textContent = "스캔 오류: " + e.message;
+    } finally {
+      $("btnScan").disabled = false;
+    }
+  });
+
+  $("btnScanAll").addEventListener("click", async () => {
+    $("btnScanAll").disabled = true;
+    try {
+      const res = await fetchJSON("/api/scan_all", { method: "POST" });
+      const parts = (res.results || []).map(x =>
+        `#${x.host_id}: ${x.ok ? x.rows + "행" : x.error}`
+      );
+      $("stats").textContent = parts.join(" · ");
+      await loadDates();
+      await loadRecords();
+    } catch (e) {
+      $("stats").textContent = "오류: " + e.message;
+    } finally {
+      $("btnScanAll").disabled = false;
+    }
+  });
+
+  $("btnAddHost").addEventListener("click", async () => {
+    const ip = $("newIp").value.trim();
+    const name = $("newName").value.trim();
+    const local_root = $("newRoot").value.trim();
+    const result_subdir = ($("newSub").value.trim() || "Result2");
+    $("hostMsg").textContent = "";
+    if (!ip || !local_root) {
+      $("hostMsg").textContent = "IP와 로컬 경로는 필수입니다.";
+      $("hostMsg").className = "msg err";
+      return;
+    }
+    try {
+      await fetchJSON("/api/hosts", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ip, name, local_root, result_subdir })
+      });
+      $("hostMsg").textContent = "등록됨.";
+      $("hostMsg").className = "msg ok";
+      $("newIp").value = "";
+      $("newName").value = "";
+      $("newRoot").value = "";
+      await loadHosts();
+      await loadDates();
+    } catch (e) {
+      $("hostMsg").textContent = e.message;
+      $("hostMsg").className = "msg err";
+    }
+  });
+
+  $("btnSaveHost").addEventListener("click", async () => {
+    const hid = $("hostSelect").value;
+    const local_root = $("editRoot").value.trim();
+    $("hostMsg").textContent = "";
+    if (!hid) return;
+    try {
+      await fetchJSON(`/api/hosts/${hid}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ local_root })
+      });
+      $("hostMsg").textContent = "경로 저장됨.";
+      $("hostMsg").className = "msg ok";
+      await loadHosts();
+    } catch (e) {
+      $("hostMsg").textContent = e.message;
+      $("hostMsg").className = "msg err";
+    }
+  });
+
+  (async function init() {
+    await loadHosts();
+    await loadDates();
+    await loadRecords();
+  })();
+})();
+</script>
+</body>
+</html>
