@@ -43,9 +43,6 @@
       비밀번호 칸을 비운 채「설정 저장」하면 기존 비밀번호를 유지합니다.
     </p>
     <div class="grid-form">
-      <label class="field">도메인 (선택)
-        <input id="setDomain" type="text" placeholder="WORKGROUP"/>
-      </label>
       <label class="field">SMB 사용자 이름
         <input id="setUser" type="text" autocomplete="username"/>
       </label>
@@ -108,7 +105,6 @@
   async function loadSettings() {
     const s = await fetchJSON("/api/settings");
     $("setUser").value = s.smb_user || "";
-    $("setDomain").value = s.smb_domain || "";
     $("setPassword").value = "";
     $("setPassword").placeholder = s.smb_password_set
       ? "· 저장됨 · 바꾸려면 입력"
@@ -340,10 +336,7 @@
 
   $("btnSaveSettings").addEventListener("click", async () => {
     $("setMsg").textContent = "";
-    const body = {
-      smb_user: $("setUser").value.trim(),
-      smb_domain: $("setDomain").value.trim(),
-    };
+    const body = { smb_user: $("setUser").value.trim() };
     const pw = $("setPassword").value;
     if (pw) body.smb_password = pw;
     try {

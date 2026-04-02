@@ -87,9 +87,7 @@ def get_smb_credentials(conn: sqlite3.Connection) -> tuple[str, str, str]:
     p = get_setting(conn, "smb_password", "")
     if not p:
         p = os.environ.get("ROUTERCUT_SMB_PASSWORD", "") or ""
-    d = (get_setting(conn, "smb_domain", "") or "").strip()
-    if not d:
-        d = (os.environ.get("ROUTERCUT_SMB_DOMAIN", "") or "").strip()
+    d = (os.environ.get("ROUTERCUT_SMB_DOMAIN", "") or "").strip()
     return u, p, d
 
 

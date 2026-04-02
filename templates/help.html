@@ -40,9 +40,8 @@ sudo apt install -y python3 python3-pip python3-venv cifs-utils</pre>
   <h2>3. 앱 실행 환경 변수</h2>
   <p>마운트 시 <code>sudo -n</code>을 쓰려면:</p>
   <pre>export ROUTERCUT_MOUNT_USE_SUDO=1</pre>
-  <p>SMB 계정은 웹 화면 <strong>「SMB 로그인 설정」</strong>에서 저장해도 되고, 대신 환경 변수로 줄 수도 있습니다.</p>
-  <pre>export ROUTERCUT_SMB_USER="도메인\\사용자"   # 선택
-export ROUTERCUT_SMB_PASSWORD="..."           # 선택</pre>
+  <p>SMB 계정은 웹 화면 <strong>「SMB 로그인 설정」</strong>에서 저장합니다. 로컬 DB 파일(<code>data/routercut.db</code>)에만 들어갑니다.</p>
+  <p class="muted">특수 도메인이 필요하면 서버에서만 <code>ROUTERCUT_SMB_DOMAIN</code> 환경 변수를 쓸 수 있습니다(보통 불필요).</p>
 
   <h2>4. 포트와 디버그</h2>
   <p>기본 포트는 <strong>15777</strong>입니다. 바꾸려면:</p>

@@ -85,7 +85,6 @@ def api_settings_get():
     return jsonify(
         {
             "smb_user": get_setting(conn, "smb_user", ""),
-            "smb_domain": get_setting(conn, "smb_domain", ""),
             "smb_password_set": bool(get_setting(conn, "smb_password", "")),
         }
     )
@@ -97,8 +96,6 @@ def api_settings_patch():
     conn = get_db()
     if "smb_user" in data:
         set_setting(conn, "smb_user", (data["smb_user"] or "").strip())
-    if "smb_domain" in data:
-        set_setting(conn, "smb_domain", (data["smb_domain"] or "").strip())
     if "smb_password" in data:
         set_setting(conn, "smb_password", data["smb_password"] or "")
     conn.commit()
