@@ -15,6 +15,20 @@ _mounted: set[int] = set()
 MNT_BASE = Path(os.environ.get("ROUTERCUT_MNT_BASE", tempfile.gettempdir())) / "routercut-wrk"
 
 
+def _sudo_mount() -> bool:
+    return os.environ.get("ROUTERCUT_MOUNT_USE_SUDO", "").lower() in (
+        "1",
+        "true",
+        "yes",
+    )
+
+
+def _priv_cmd(argv: list[str]) -> list[str]:
+    if _sudo_mount():
+        return ["sudo", "-n", *argv]
+    return argv
+
+
 def mount_point(host_id: int) -> Path:
     return MNT_BASE / f"h{host_id}"
 
@@ -76,11 +90,19 @@ def ensure_mounted(host_row) -> tuple[bool, str]:
                 opt_parts.append("guest")
 
             opts = ",".join(opt_parts)
-            cmd = ["mount", "-t", "cifs", unc, str(mp), "-o", opts]
+            cmd = _priv_cmd(["mount", "-t", "cifs", unc, str(mp), "-o", opts])
             r = subprocess.run(cmd, capture_output=True, text=True, env=env, timeout=120)
             if r.returncode != 0:
                 _refcount[host_id] = max(0, _refcount[host_id] - 1)
                 msg = (r.stderr or r.stdout or "").strip() or "mount failed"
+                low = msg.lower()
+                if _sudo_mount() and (
+                    "password" in low or "a terminal is required" in low or "interactive" in low
+                ):
+                    msg += (
+                        " — sudo 비밀번호 없이 mount 허용 필요: "
+                        "NOPASSWD 로 /bin/mount, /bin/umount (배포판에 따라 /usr/bin/… 경로)"
+                    )
                 return False, msg
             _mounted.add(host_id)
             return True, ""
@@ -107,7 +129,10 @@ def release_mounted(host_id: int) -> None:
         if c == 0:
             mp = mount_point(host_id)
             subprocess.run(
-                ["umount", str(mp)], capture_output=True, text=True, timeout=60
+                _priv_cmd(["umount", str(mp)]),
+                capture_output=True,
+                text=True,
+                timeout=60,
             )
             _mounted.discard(host_id)
 
@@ -119,7 +144,10 @@ def force_umount_host(host_id: int) -> None:
         if host_id in _mounted:
             mp = mount_point(host_id)
             subprocess.run(
-                ["umount", str(mp)], capture_output=True, text=True, timeout=60
+                _priv_cmd(["umount", str(mp)]),
+                capture_output=True,
+                text=True,
+                timeout=60,
             )
             _mounted.discard(host_id)
 

@@ -1,4 +1,4 @@
-"""Scan Result2/<yyyyMMdd>/Result.csv and ingest into SQLite."""
+"""Scan <yyyyMMdd>/Result.csv under host root (SMB share root or local dir)."""
 
 from __future__ import annotations
 
@@ -18,9 +18,7 @@ RE_AFTER_RESULT = re.compile(r"Result\D*?(\d{8})([/\\].+)$", re.I)
 
 
 def _result_base_path(host_row: sqlite3.Row) -> Path:
-    root = Path(host_row["local_root"]).expanduser().resolve()
-    sub = host_row["result_subdir"] or "Result2"
-    return root / sub
+    return Path(host_row["local_root"]).expanduser().resolve()
 
 
 def _normalize_columns(df: pd.DataFrame) -> pd.DataFrame | None:

@@ -52,9 +52,7 @@ def _image_abspath(host: sqlite3.Row, folder_date: str, filename: str) -> Path |
     fn = os.path.basename(str(filename).replace("\\", "/"))
     if not fn or fn in (".", ".."):
         return None
-    root = Path(host["local_root"]).expanduser().resolve()
-    sub = host["result_subdir"] or "Result2"
-    base = (root / sub).resolve()
+    base = Path(host["local_root"]).expanduser().resolve()
     full = (base / folder_date / "Image" / fn).resolve()
     try:
         if hasattr(full, "is_relative_to"):
@@ -90,7 +88,6 @@ def api_hosts_create():
     name = (data.get("name") or "").strip() or ip
     smb_share = (data.get("smb_share") or "").strip()
     local_root = (data.get("local_root") or "").strip()
-    result_subdir = (data.get("result_subdir") or "Result2").strip() or "Result2"
     if not ip:
         return jsonify({"ok": False, "error": "ip is required"}), 400
     if smb_share:
@@ -104,8 +101,8 @@ def api_hosts_create():
     conn = get_db()
     try:
         cur = conn.execute(
-            "INSERT INTO hosts (ip, name, local_root, result_subdir, smb_share) VALUES (?, ?, ?, ?, ?)",
-            (ip, name, pending_root, result_subdir, smb_share or None),
+            "INSERT INTO hosts (ip, name, local_root, smb_share) VALUES (?, ?, ?, ?)",
+            (ip, name, pending_root, smb_share or None),
         )
         conn.commit()
     except sqlite3.IntegrityError:
@@ -126,12 +123,10 @@ def api_hosts_patch(host_id: int):
     data = request.get_json(force=True, silent=True) or {}
     fields: list[str] = []
     vals: list = []
-    for key in ("ip", "name", "result_subdir"):
+    for key in ("ip", "name"):
         if key in data:
             fields.append(f"{key} = ?")
-            if key == "result_subdir":
-                vals.append((data[key] or "Result2").strip() or "Result2")
-            elif key == "ip":
+            if key == "ip":
                 vals.append((data[key] or "").strip())
             else:
                 vals.append(data[key])
@@ -325,4 +320,10 @@ def favicon():
 
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", "5000")), debug=True)
+    _dbg = os.environ.get("ROUTERCUT_DEBUG", "").lower() in ("1", "true", "yes")
+    app.run(
+        host="0.0.0.0",
+        port=int(os.environ.get("PORT", "5000")),
+        debug=_dbg,
+        use_reloader=_dbg,
+    )

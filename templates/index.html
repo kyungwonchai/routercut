@@ -38,23 +38,23 @@
   <section class="panel">
     <h2>장비 등록 · SMB</h2>
     <p style="margin:0 0 10px;font-size:0.85rem;color:var(--muted)">
-      <strong>IP</strong>와 Windows 공유 이름(<code>//IP/공유이름</code>의 공유이름)만 지정하면 됩니다.
-      앱이 임시 폴더에 마운트했다가 스캔·이미지 읽기 후 해제합니다. 공유 루트 아래
-      <code>Result2/yyyyMMdd/Result.csv</code> 구조를 가정합니다. 인증은 환경 변수
-      <code>ROUTERCUT_SMB_USER</code> / <code>ROUTERCUT_SMB_PASSWORD</code> (또는 미설정 시 guest).
+      Windows에서 <code>\\IP\공유이름</code> (탐색기 주소창)과 같습니다. 예: IP가
+      <code>10.56.164.91</code>이고 공유 이름이 <code>Result2</code>이면 리눅스에서는
+      <code>//10.56.164.91/Result2</code> 한 덩어리로 마운트합니다. 그 공유 루트 바로 아래에
+      <code>yyyyMMdd/Result.csv</code>, <code>yyyyMMdd/Image/</code> 가 있다고 봅니다.
+      마운트에 root가 필요하면 환경 변수 <code>ROUTERCUT_MOUNT_USE_SUDO=1</code> 과
+      <code>sudo -n</code>에 허용된 <code>mount</code>/<code>umount</code>(NOPASSWD)를 맞추세요.
+      SMB 인증: <code>ROUTERCUT_SMB_USER</code> / <code>ROUTERCUT_SMB_PASSWORD</code> (없으면 guest).
     </p>
     <div class="grid-form">
       <label class="field">IP
-        <input id="newIp" type="text" placeholder="10.0.0.5"/>
+        <input id="newIp" type="text" placeholder="10.56.164.91"/>
       </label>
       <label class="field">이름
         <input id="newName" type="text" placeholder="별칭"/>
       </label>
-      <label class="field">SMB 공유 이름
-        <input id="newShare" type="text" placeholder="예: Public, Data"/>
-      </label>
-      <label class="field">하위 폴더(기본 Result2)
-        <input id="newSub" type="text" value="Result2"/>
+      <label class="field">공유 이름
+        <input id="newShare" type="text" placeholder="예: Result2 (\\IP\이름 과 동일)"/>
       </label>
       <button type="button" class="primary" id="btnAddHost">추가</button>
     </div>
@@ -101,7 +101,7 @@
     if (!h) return;
     const sh = (h.smb_share || "").trim();
     if (sh) {
-      $("editLabel").textContent = "선택 장비 SMB 공유 이름";
+      $("editLabel").textContent = "선택 장비 공유 이름";
       $("editPath").value = sh;
     } else {
       $("editLabel").textContent = "선택 장비 로컬 절대 경로";
@@ -281,7 +281,6 @@
     const name = $("newName").value.trim();
     const smb_share = $("newShare").value.trim();
     const local_root = $("newLocalRoot").value.trim();
-    const result_subdir = ($("newSub").value.trim() || "Result2");
     $("hostMsg").textContent = "";
     if (!ip || (!smb_share && !local_root)) {
       $("hostMsg").textContent = "IP와 SMB 공유 이름(또는 로컬 절대 경로)이 필요합니다.";
@@ -289,7 +288,7 @@
       return;
     }
     try {
-      const body = { ip, name, result_subdir };
+      const body = { ip, name };
       if (smb_share) body.smb_share = smb_share;
       if (local_root) body.local_root = local_root;
       await fetchJSON("/api/hosts", {
