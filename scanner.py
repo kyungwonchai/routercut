@@ -9,6 +9,8 @@ from pathlib import Path
 
 import pandas as pd
 
+from smb_mount import ensure_mounted, release_mounted
+
 RE_DATE_DIR = re.compile(r"^\d{8}$")
 RE_PATH_IMAGE = re.compile(r"[/\\]Image[/\\]([^/\\]+)$", re.I)
 # After 'Result' (case-insensitive), optional non-digits, then 8-digit date and rest
@@ -60,12 +62,7 @@ def _parse_image_basename(path_val: str, folder_date: str, image_dir: Path) -> s
     return fn
 
 
-def scan_host(conn: sqlite3.Connection, host_id: int) -> dict:
-    cur = conn.execute("SELECT * FROM hosts WHERE id = ?", (host_id,))
-    host = cur.fetchone()
-    if not host:
-        return {"ok": False, "error": "host not found", "rows": 0, "folders": []}
-
+def _scan_host_run(conn: sqlite3.Connection, host_id: int, host: sqlite3.Row) -> dict:
     base = _result_base_path(host)
     if not base.is_dir():
         return {"ok": False, "error": f"local path not found: {base}", "rows": 0, "folders": []}
@@ -162,3 +159,18 @@ def scan_host(conn: sqlite3.Connection, host_id: int) -> dict:
 
     conn.commit()
     return {"ok": True, "error": None, "rows": total_upsert, "folders": touched_folders}
+
+
+def scan_host(conn: sqlite3.Connection, host_id: int) -> dict:
+    cur = conn.execute("SELECT * FROM hosts WHERE id = ?", (host_id,))
+    host = cur.fetchone()
+    if not host:
+        return {"ok": False, "error": "host not found", "rows": 0, "folders": []}
+
+    ok_m, err_m = ensure_mounted(host)
+    if not ok_m:
+        return {"ok": False, "error": err_m, "rows": 0, "folders": []}
+    try:
+        return _scan_host_run(conn, host_id, host)
+    finally:
+        release_mounted(host_id)

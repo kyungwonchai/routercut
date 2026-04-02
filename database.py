@@ -30,7 +30,6 @@ def init_db(conn: sqlite3.Connection) -> None:
             created_at TEXT DEFAULT (datetime('now'))
         );
         CREATE UNIQUE INDEX IF NOT EXISTS idx_hosts_ip ON hosts(ip);
-
         CREATE TABLE IF NOT EXISTS records (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             host_id INTEGER NOT NULL REFERENCES hosts(id) ON DELETE CASCADE,
@@ -51,6 +50,9 @@ def init_db(conn: sqlite3.Connection) -> None:
         CREATE INDEX IF NOT EXISTS idx_rec_time_barcode ON records(host_id, time, barcode);
         """
     )
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(hosts)").fetchall()}
+    if "smb_share" not in cols:
+        conn.execute("ALTER TABLE hosts ADD COLUMN smb_share TEXT")
     conn.commit()
 
 

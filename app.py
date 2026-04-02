@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import atexit
 import io
+import mimetypes
 import os
 import re
 import sqlite3
@@ -14,11 +16,18 @@ from flask import Flask, jsonify, render_template, request, send_file
 from database import connect, init_db
 from pivot import build_pivot_rows, filter_ng_only
 from scanner import scan_host
+from smb_mount import (
+    ensure_mounted,
+    force_umount_host,
+    mount_point,
+    release_mounted,
+    umount_all,
+)
 
 APP_DIR = Path(__file__).resolve().parent
-DEFAULT_LOCAL_ROOT = os.environ.get("ROUTERCUT_DEFAULT_LOCAL_ROOT", "/mnt/10.56.164.91")
 
 app = Flask(__name__)
+atexit.register(umount_all)
 app.config["JSON_AS_ASCII"] = False
 
 _db: sqlite3.Connection | None = None
@@ -29,18 +38,7 @@ def get_db() -> sqlite3.Connection:
     if _db is None:
         _db = connect()
         init_db(_db)
-        _ensure_default_host(_db)
     return _db
-
-
-def _ensure_default_host(conn: sqlite3.Connection) -> None:
-    cur = conn.execute("SELECT id FROM hosts WHERE ip = ?", ("10.56.164.91",))
-    if cur.fetchone() is None:
-        conn.execute(
-            "INSERT INTO hosts (ip, name, local_root, result_subdir) VALUES (?, ?, ?, ?)",
-            ("10.56.164.91", "기본 장비", DEFAULT_LOCAL_ROOT, "Result2"),
-        )
-        conn.commit()
 
 
 def _host_row(conn: sqlite3.Connection, host_id: int) -> sqlite3.Row | None:
@@ -90,20 +88,35 @@ def api_hosts_create():
     data = request.get_json(force=True, silent=True) or {}
     ip = (data.get("ip") or "").strip()
     name = (data.get("name") or "").strip() or ip
+    smb_share = (data.get("smb_share") or "").strip()
     local_root = (data.get("local_root") or "").strip()
     result_subdir = (data.get("result_subdir") or "Result2").strip() or "Result2"
-    if not ip or not local_root:
-        return jsonify({"ok": False, "error": "ip and local_root are required"}), 400
+    if not ip:
+        return jsonify({"ok": False, "error": "ip is required"}), 400
+    if smb_share:
+        pending_root = "."
+    elif local_root:
+        pending_root = local_root
+    else:
+        return jsonify(
+            {"ok": False, "error": "smb_share (SMB 공유 이름) 또는 local_root 가 필요합니다"}
+        ), 400
     conn = get_db()
     try:
         cur = conn.execute(
-            "INSERT INTO hosts (ip, name, local_root, result_subdir) VALUES (?, ?, ?, ?)",
-            (ip, name, local_root, result_subdir),
+            "INSERT INTO hosts (ip, name, local_root, result_subdir, smb_share) VALUES (?, ?, ?, ?, ?)",
+            (ip, name, pending_root, result_subdir, smb_share or None),
         )
         conn.commit()
     except sqlite3.IntegrityError:
         return jsonify({"ok": False, "error": "duplicate ip"}), 409
     hid = cur.lastrowid
+    if smb_share:
+        conn.execute(
+            "UPDATE hosts SET local_root = ? WHERE id = ?",
+            (str(mount_point(hid)), hid),
+        )
+        conn.commit()
     row = _host_row(conn, hid)
     return jsonify({"ok": True, "host": dict(row)})
 
@@ -111,29 +124,57 @@ def api_hosts_create():
 @app.patch("/api/hosts/<int:host_id>")
 def api_hosts_patch(host_id: int):
     data = request.get_json(force=True, silent=True) or {}
-    fields = []
-    vals = []
-    for key in ("ip", "name", "local_root", "result_subdir"):
+    fields: list[str] = []
+    vals: list = []
+    for key in ("ip", "name", "result_subdir"):
         if key in data:
             fields.append(f"{key} = ?")
-            vals.append(data[key])
+            if key == "result_subdir":
+                vals.append((data[key] or "Result2").strip() or "Result2")
+            elif key == "ip":
+                vals.append((data[key] or "").strip())
+            else:
+                vals.append(data[key])
+
+    if "smb_share" in data or "local_root" in data:
+        smb_v = None
+        if "smb_share" in data:
+            smb_v = (data["smb_share"] or "").strip() or None
+        lr_v = (data["local_root"] or "").strip() if "local_root" in data else None
+
+        if smb_v:
+            fields.extend(["smb_share = ?", "local_root = ?"])
+            vals.extend([smb_v, str(mount_point(host_id))])
+        elif "smb_share" in data and not smb_v and lr_v:
+            fields.extend(["smb_share = ?", "local_root = ?"])
+            vals.extend([None, lr_v])
+        elif "local_root" in data and "smb_share" not in data:
+            fields.append("local_root = ?")
+            vals.append(lr_v)
+        elif "smb_share" in data and not smb_v and not lr_v:
+            return jsonify(
+                {"ok": False, "error": "SMB 해제 시 local_root(절대 경로)가 필요합니다"}
+            ), 400
+
     if not fields:
         return jsonify({"ok": False, "error": "no fields"}), 400
     vals.append(host_id)
     conn = get_db()
+    row0 = _host_row(conn, host_id)
+    if not row0:
+        return jsonify({"ok": False, "error": "not found"}), 404
     try:
         conn.execute(f"UPDATE hosts SET {', '.join(fields)} WHERE id = ?", vals)
         conn.commit()
     except sqlite3.IntegrityError:
         return jsonify({"ok": False, "error": "duplicate ip"}), 409
     row = _host_row(conn, host_id)
-    if not row:
-        return jsonify({"ok": False, "error": "not found"}), 404
     return jsonify({"ok": True, "host": dict(row)})
 
 
 @app.delete("/api/hosts/<int:host_id>")
 def api_hosts_delete(host_id: int):
+    force_umount_host(host_id)
     conn = get_db()
     conn.execute("DELETE FROM hosts WHERE id = ?", (host_id,))
     conn.commit()
@@ -231,10 +272,23 @@ def api_image():
     host = _host_row(conn, host_id)
     if not host:
         return "not found", 404
-    path = _image_abspath(host, folder_date, file)
-    if not path:
-        return "not found", 404
-    return send_file(path, as_attachment=False)
+    use_smb = bool((host["smb_share"] or "").strip())
+    if use_smb:
+        ok_m, err_m = ensure_mounted(host)
+        if not ok_m:
+            return err_m, 500
+    try:
+        path = _image_abspath(host, folder_date, file)
+        if not path:
+            return "not found", 404
+        if use_smb:
+            blob = path.read_bytes()
+            mime = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
+            return send_file(io.BytesIO(blob), mimetype=mime, as_attachment=False)
+        return send_file(path, as_attachment=False)
+    finally:
+        if use_smb:
+            release_mounted(host_id)
 
 
 @app.get("/api/export.xlsx")

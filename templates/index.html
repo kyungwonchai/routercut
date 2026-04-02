@@ -36,10 +36,12 @@
   <div id="tableHost" class="table-wrap"></div>
 
   <section class="panel">
-    <h2>장비 등록 · 경로</h2>
+    <h2>장비 등록 · SMB</h2>
     <p style="margin:0 0 10px;font-size:0.85rem;color:var(--muted)">
-      SMB 등으로 마운트한 로컬 경로의 <strong>Result2 상위 폴더</strong>를 적습니다.
-      (예: <code>/mnt/10.56.164.91</code> 아래에 <code>Result2/20260305/Result.csv</code> 구조)
+      <strong>IP</strong>와 Windows 공유 이름(<code>//IP/공유이름</code>의 공유이름)만 지정하면 됩니다.
+      앱이 임시 폴더에 마운트했다가 스캔·이미지 읽기 후 해제합니다. 공유 루트 아래
+      <code>Result2/yyyyMMdd/Result.csv</code> 구조를 가정합니다. 인증은 환경 변수
+      <code>ROUTERCUT_SMB_USER</code> / <code>ROUTERCUT_SMB_PASSWORD</code> (또는 미설정 시 guest).
     </p>
     <div class="grid-form">
       <label class="field">IP
@@ -48,18 +50,24 @@
       <label class="field">이름
         <input id="newName" type="text" placeholder="별칭"/>
       </label>
-      <label class="field">로컬 마운트 경로
-        <input id="newRoot" type="text" placeholder="/mnt/장비IP"/>
+      <label class="field">SMB 공유 이름
+        <input id="newShare" type="text" placeholder="예: Public, Data"/>
       </label>
       <label class="field">하위 폴더(기본 Result2)
         <input id="newSub" type="text" value="Result2"/>
       </label>
       <button type="button" class="primary" id="btnAddHost">추가</button>
     </div>
+    <details style="margin-top:10px;font-size:0.85rem;color:var(--muted)">
+      <summary>로컬 디렉터리만 쓰기 (레거시)</summary>
+      <label class="field" style="margin-top:8px">절대 경로 (공유 이름 비울 때)
+        <input id="newLocalRoot" type="text" placeholder="/이미/마운트된/경로"/>
+      </label>
+    </details>
     <div class="msg" id="hostMsg"></div>
     <div style="margin-top:12px">
-      <label class="field">선택 장비 로컬 경로 수정
-        <input id="editRoot" type="text"/>
+      <label class="field"><span id="editLabel">선택 장비 SMB 공유 이름</span>
+        <input id="editPath" type="text"/>
       </label>
       <button type="button" id="btnSaveHost">저장</button>
     </div>
@@ -86,8 +94,18 @@
       `<option value="${h.id}">${h.ip} — ${h.name || ""}</option>`
     ).join("");
     const h = state.hosts.find(x => x.id === +sel.value) || state.hosts[0];
-    if (h) {
-      $("editRoot").value = h.local_root || "";
+    syncEditPanel(h);
+  }
+
+  function syncEditPanel(h) {
+    if (!h) return;
+    const sh = (h.smb_share || "").trim();
+    if (sh) {
+      $("editLabel").textContent = "선택 장비 SMB 공유 이름";
+      $("editPath").value = sh;
+    } else {
+      $("editLabel").textContent = "선택 장비 로컬 절대 경로";
+      $("editPath").value = h.local_root || "";
     }
   }
 
@@ -206,7 +224,7 @@
 
   $("hostSelect").addEventListener("change", async () => {
     const h = state.hosts.find(x => x.id === +$("hostSelect").value);
-    if (h) $("editRoot").value = h.local_root || "";
+    if (h) syncEditPanel(h);
     await loadDates();
     await loadRecords();
   });
@@ -261,25 +279,30 @@
   $("btnAddHost").addEventListener("click", async () => {
     const ip = $("newIp").value.trim();
     const name = $("newName").value.trim();
-    const local_root = $("newRoot").value.trim();
+    const smb_share = $("newShare").value.trim();
+    const local_root = $("newLocalRoot").value.trim();
     const result_subdir = ($("newSub").value.trim() || "Result2");
     $("hostMsg").textContent = "";
-    if (!ip || !local_root) {
-      $("hostMsg").textContent = "IP와 로컬 경로는 필수입니다.";
+    if (!ip || (!smb_share && !local_root)) {
+      $("hostMsg").textContent = "IP와 SMB 공유 이름(또는 로컬 절대 경로)이 필요합니다.";
       $("hostMsg").className = "msg err";
       return;
     }
     try {
+      const body = { ip, name, result_subdir };
+      if (smb_share) body.smb_share = smb_share;
+      if (local_root) body.local_root = local_root;
       await fetchJSON("/api/hosts", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ ip, name, local_root, result_subdir })
+        body: JSON.stringify(body)
       });
       $("hostMsg").textContent = "등록됨.";
       $("hostMsg").className = "msg ok";
       $("newIp").value = "";
       $("newName").value = "";
-      $("newRoot").value = "";
+      $("newShare").value = "";
+      $("newLocalRoot").value = "";
       await loadHosts();
       await loadDates();
     } catch (e) {
@@ -290,14 +313,18 @@
 
   $("btnSaveHost").addEventListener("click", async () => {
     const hid = $("hostSelect").value;
-    const local_root = $("editRoot").value.trim();
+    const val = $("editPath").value.trim();
     $("hostMsg").textContent = "";
     if (!hid) return;
+    const h = state.hosts.find(x => x.id === +hid);
+    const body = (h && (h.smb_share || "").trim())
+      ? { smb_share: val }
+      : { local_root: val };
     try {
       await fetchJSON(`/api/hosts/${hid}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ local_root })
+        body: JSON.stringify(body)
       });
       $("hostMsg").textContent = "경로 저장됨.";
       $("hostMsg").className = "msg ok";
