@@ -81,12 +81,6 @@
       </label>
     </details>
     <div class="msg" id="hostMsg"></div>
-    <div style="margin-top:12px">
-      <label class="field"><span id="editLabel">선택 장비 공유 이름</span>
-        <input id="editPath" type="text"/>
-      </label>
-      <button type="button" id="btnSaveHost">저장</button>
-    </div>
   </section>
 </main>
 
@@ -118,20 +112,6 @@
     sel.innerHTML = state.hosts.map(h =>
       `<option value="${h.id}">${h.ip} — ${h.name || ""}</option>`
     ).join("");
-    const h = state.hosts.find(x => x.id === +sel.value) || state.hosts[0];
-    syncEditPanel(h);
-  }
-
-  function syncEditPanel(h) {
-    if (!h) return;
-    const sh = (h.smb_share || "").trim();
-    if (sh) {
-      $("editLabel").textContent = "선택 장비 공유 이름";
-      $("editPath").value = sh;
-    } else {
-      $("editLabel").textContent = "선택 장비 로컬 절대 경로";
-      $("editPath").value = h.local_root || "";
-    }
   }
 
   async function loadDates() {
@@ -248,8 +228,6 @@
   }
 
   $("hostSelect").addEventListener("change", async () => {
-    const h = state.hosts.find(x => x.id === +$("hostSelect").value);
-    if (h) syncEditPanel(h);
     await loadDates();
     await loadRecords();
   });
@@ -370,30 +348,6 @@
     } catch (e) {
       $("setMsg").textContent = e.message;
       $("setMsg").className = "msg err";
-    }
-  });
-
-  $("btnSaveHost").addEventListener("click", async () => {
-    const hid = $("hostSelect").value;
-    const val = $("editPath").value.trim();
-    $("hostMsg").textContent = "";
-    if (!hid) return;
-    const h = state.hosts.find(x => x.id === +hid);
-    const body = (h && (h.smb_share || "").trim())
-      ? { smb_share: val }
-      : { local_root: val };
-    try {
-      await fetchJSON(`/api/hosts/${hid}`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body)
-      });
-      $("hostMsg").textContent = "경로 저장됨.";
-      $("hostMsg").className = "msg ok";
-      await loadHosts();
-    } catch (e) {
-      $("hostMsg").textContent = e.message;
-      $("hostMsg").className = "msg err";
     }
   });
 
