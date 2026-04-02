@@ -20,41 +20,42 @@
 <body>
 <div class="doc">
   <p class="back"><a href="/">← 메인으로</a></p>
-  <h1>RouterCut — 우분투에서 일반 사용자로 돌리기</h1>
+  <h1>RouterCut — 동적 마운트(CIFS) + 로컬 DB</h1>
 
-  <h2>왜 예전에 400 / mount 오류가 났나</h2>
-  <p>리눅스에서 <code>mount -t cifs</code> 는 <strong>커널에 “이 SMB 공유를 내 폴더에 붙여라”</strong>라고 요청하는 것이라, 보통 <strong>root 권한(CAP_SYS_ADMIN)</strong>이 필요합니다. 일반 유저로 앱만 돌리면 “permission denied”, “mount system call failed” 류 메시지와 함께 스캔 API가 <strong>400</strong>을 내기 쉽습니다.</p>
-  <p><strong>지금 버전은 마운트를 쓰지 않습니다.</strong> Python 패키지 <code>smbprotocol</code>으로 <strong>SMB 프로토콜(445포트)만 직접</strong> 연결해 <code>Result.csv</code>·이미지를 읽습니다. 그래서 <strong>sudo 없이</strong> 같은 유저 계정으로 실행하면 됩니다.</p>
+  <h2>장비 등록이 “안 된다”면</h2>
+  <ul>
+    <li><strong>같은 IP 중복</strong>이면 서버가 409를 돌려줍니다. 메시지: 「이미 같은 IP로…」 → 기존 행을 고치거나 IP를 바꾸세요.</li>
+    <li><strong>저장 위치</strong>: <code>data/routercut.db</code> (프로젝트 폴더). 디스크 풀·권한·다른 프로세스 잠금을 확인하세요. WAL 모드 사용 중입니다.</li>
+  </ul>
 
-  <h2>1. 패키지 설치</h2>
+  <h2>동적 마운트 동작</h2>
+  <p>장비가 SMB 공유면, 스캔·이미지 요청 시에만 <code>mount -t cifs //IP/공유 …</code> 로 붙였다가 작업이 끝나면 <code>umount</code> 합니다. 상시 마운트가 아닙니다.</p>
+  <p class="muted">커널 마운트는 보통 root 권한이 필요합니다. 앱은 일반 사용자로 두고, 아래처럼 <code>mount</code>/<code>umount</code> 만 sudo 로 허용하는 방식을 권장합니다.</p>
+
+  <h2>1. 패키지</h2>
   <pre>sudo apt update
-sudo apt install -y python3 python3-pip python3-venv</pre>
-  <p class="muted"><code>cifs-utils</code>는 더 이상 필수가 아닙니다(마운트 안 함).</p>
+sudo apt install -y python3 python3-pip cifs-utils</pre>
   <pre>cd /path/to/routercut
 pip install -r requirements.txt</pre>
-  <p class="muted">가상환경(<code>python3 -m venv .venv</code>) 쓰는 것을 권장합니다.</p>
 
-  <h2>2. 방화벽 · 네트워크</h2>
-  <p>PC에서 장비(또는 파일 서버)로 <strong>TCP 445</strong>가 열려 있어야 합니다. 장비 쪽 Windows 방화벽에서 “파일 및 프린터 공유” 허용 여부도 확인하세요.</p>
+  <h2>2. sudo (NOPASSWD) 예시</h2>
+  <p><code>kw</code> 를 본인 계정으로 바꿉니다.</p>
+  <pre>sudo visudo -f /etc/sudoers.d/routercut</pre>
+  <pre>kw ALL=(root) NOPASSWD: /usr/bin/mount, /usr/bin/umount, /bin/mount, /bin/umount</pre>
+  <p>실행 전:</p>
+  <pre>export ROUTERCUT_MOUNT_USE_SUDO=1</pre>
+  <p class="muted"><code>scripts/run-background.sh</code> 는 기본으로 이 값을 켭니다.</p>
 
   <h2>3. SMB 계정</h2>
-  <p>웹 화면 <strong>「SMB 로그인 설정」</strong>에 사용자·비밀번호를 넣습니다. 저장 위치는 이 PC의 <code>data/routercut.db</code> 뿐입니다.</p>
-  <p class="muted">일부 장비만 서명을 강제하면 터미널에서 <code>export ROUTERCUT_SMB_REQUIRE_SIGNING=1</code> 후 앱을 다시 실행해 볼 수 있습니다(기본은 끔에 가깝게 두어 호환 우선).</p>
+  <p>웹 「SMB 로그인 설정」 → <code>data/routercut.db</code> 의 <code>app_settings</code> 에만 저장됩니다.</p>
 
-  <h2>4. 포트·디버그</h2>
-  <p>앱 기본 포트 <strong>15777</strong>. 바꾸려면 <code>export PORT=원하는포트</code>.</p>
-  <p>디버그(리로더)는 기본 꺼짐. 필요 시만 <code>export ROUTERCUT_DEBUG=1</code>.</p>
-
-  <h2>5. 실행</h2>
-  <pre>cd /path/to/routercut
+  <h2>4. 실행 · 포트</h2>
+  <pre>export ROUTERCUT_MOUNT_USE_SUDO=1
 python3 app.py</pre>
-  <p>브라우저: <code>http://이_PC_IP:15777</code></p>
-  <p>백그라운드:</p>
-  <pre>./scripts/run-background.sh</pre>
-  <p class="muted">로그: <code>/tmp/routercut.log</code> · PID: <code>/tmp/routercut.pid</code></p>
+  <p>기본 포트 <strong>15777</strong>. 디버그는 <code>ROUTERCUT_DEBUG=1</code> 일 때만.</p>
 
-  <h2>6. SMB 경로</h2>
-  <p>Windows <code>\\10.56.164.91\Result2</code> 와 같이 쓰면, 앱에는 IP <code>10.56.164.91</code>, 공유 이름 <code>Result2</code> 로만 넣습니다. 그 아래에 <code>yyyyMMdd/Result.csv</code> 구조가 있다고 봅니다.</p>
+  <h2>5. SMB 경로</h2>
+  <p>Windows <code>\\10.56.164.91\Result2</code> → IP <code>10.56.164.91</code>, 공유 이름 <code>Result2</code>. 공유 루트 바로 아래 <code>yyyyMMdd/Result.csv</code> 구조.</p>
 </div>
 </body>
 </html>

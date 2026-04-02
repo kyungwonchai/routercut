@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import atexit
 import io
 import mimetypes
 import os
@@ -15,14 +16,43 @@ from flask import Flask, jsonify, render_template, request, send_file
 from database import connect, get_smb_credentials, get_setting, init_db, set_setting
 from pivot import build_pivot_rows, filter_ng_only
 from scanner import scan_host
-from smb_remote import register_smb, smb_read_bytes, unc_join, unc_root
+from smb_mount import (
+    ensure_mounted,
+    force_umount_host,
+    mount_point,
+    release_mounted,
+    umount_all,
+)
 
 APP_DIR = Path(__file__).resolve().parent
 
 app = Flask(__name__)
+atexit.register(umount_all)
 app.config["JSON_AS_ASCII"] = False
 
 _db: sqlite3.Connection | None = None
+
+
+def _repair_smb_local_roots(conn: sqlite3.Connection) -> None:
+    """SMB 호스트의 local_root 가 '.' 등으로 잘못 저장된 경우 마운트 지점으로 고침."""
+    rows = conn.execute(
+        """
+        SELECT id, local_root, smb_share FROM hosts
+        WHERE smb_share IS NOT NULL AND trim(smb_share) != ''
+        """
+    ).fetchall()
+    changed = False
+    for r in rows:
+        lr = (r["local_root"] or "").strip()
+        if lr in (".", ""):
+            hid = int(r["id"])
+            conn.execute(
+                "UPDATE hosts SET local_root = ? WHERE id = ?",
+                (str(mount_point(hid)), hid),
+            )
+            changed = True
+    if changed:
+        conn.commit()
 
 
 def get_db() -> sqlite3.Connection:
@@ -30,6 +60,7 @@ def get_db() -> sqlite3.Connection:
     if _db is None:
         _db = connect()
         init_db(_db)
+        _repair_smb_local_roots(_db)
     return _db
 
 
@@ -59,31 +90,6 @@ def _image_abspath(host: sqlite3.Row, folder_date: str, filename: str) -> Path |
     if full.is_file():
         return full
     return None
-
-
-def _image_smb_load(
-    conn: sqlite3.Connection,
-    host: sqlite3.Row,
-    folder_date: str,
-    file: str,
-) -> bytes | None:
-    if not re.fullmatch(r"\d{8}", folder_date or ""):
-        return None
-    share = (host["smb_share"] or "").strip()
-    if not share:
-        return None
-    fn = os.path.basename(str(file).replace("\\", "/"))
-    if not fn or fn in (".", "..") or ".." in fn:
-        return None
-    ip = str(host["ip"]).strip()
-    root_unc = unc_root(ip, share)
-    img_unc = unc_join(root_unc, folder_date, "Image", fn)
-    u, p, d = get_smb_credentials(conn)
-    try:
-        register_smb(ip, u, p, d)
-        return smb_read_bytes(img_unc)
-    except Exception:
-        return None
 
 
 @app.route("/")
@@ -149,10 +155,18 @@ def api_hosts_create():
             "INSERT INTO hosts (ip, name, local_root, smb_share) VALUES (?, ?, ?, ?)",
             (ip, name, pending_root, smb_share or None),
         )
+        hid = cur.lastrowid
+        if smb_share:
+            conn.execute(
+                "UPDATE hosts SET local_root = ? WHERE id = ?",
+                (str(mount_point(hid)), hid),
+            )
         conn.commit()
     except sqlite3.IntegrityError:
-        return jsonify({"ok": False, "error": "duplicate ip"}), 409
-    hid = cur.lastrowid
+        conn.rollback()
+        return jsonify(
+            {"ok": False, "error": "이미 같은 IP로 등록된 장비가 있습니다. 목록에서 선택하거나 IP를 바꿔 주세요."}
+        ), 409
     row = _host_row(conn, hid)
     return jsonify({"ok": True, "host": dict(row)})
 
@@ -178,7 +192,7 @@ def api_hosts_patch(host_id: int):
 
         if smb_v:
             fields.extend(["smb_share = ?", "local_root = ?"])
-            vals.extend([smb_v, "."])
+            vals.extend([smb_v, str(mount_point(host_id))])
         elif "smb_share" in data and not smb_v and lr_v:
             fields.extend(["smb_share = ?", "local_root = ?"])
             vals.extend([None, lr_v])
@@ -201,13 +215,17 @@ def api_hosts_patch(host_id: int):
         conn.execute(f"UPDATE hosts SET {', '.join(fields)} WHERE id = ?", vals)
         conn.commit()
     except sqlite3.IntegrityError:
-        return jsonify({"ok": False, "error": "duplicate ip"}), 409
+        conn.rollback()
+        return jsonify(
+            {"ok": False, "error": "이미 같은 IP로 등록된 장비가 있습니다."}
+        ), 409
     row = _host_row(conn, host_id)
     return jsonify({"ok": True, "host": dict(row)})
 
 
 @app.delete("/api/hosts/<int:host_id>")
 def api_hosts_delete(host_id: int):
+    force_umount_host(host_id)
     conn = get_db()
     conn.execute("DELETE FROM hosts WHERE id = ?", (host_id,))
     conn.commit()
@@ -307,11 +325,21 @@ def api_image():
         return "not found", 404
     use_smb = bool((host["smb_share"] or "").strip())
     if use_smb:
-        blob = _image_smb_load(conn, host, folder_date, file)
-        if blob is None:
-            return "not found", 404
-        mime = mimetypes.guess_type(os.path.basename(file))[0] or "application/octet-stream"
-        return send_file(io.BytesIO(blob), mimetype=mime, as_attachment=False)
+        u, p, d = get_smb_credentials(conn)
+        ok_m, err_m = ensure_mounted(
+            host, cred_user=u, cred_password=p, cred_domain=d
+        )
+        if not ok_m:
+            return err_m, 500
+        try:
+            path = _image_abspath(host, folder_date, file)
+            if not path:
+                return "not found", 404
+            blob = path.read_bytes()
+            mime = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
+            return send_file(io.BytesIO(blob), mimetype=mime, as_attachment=False)
+        finally:
+            release_mounted(host_id)
     path = _image_abspath(host, folder_date, file)
     if not path:
         return "not found", 404

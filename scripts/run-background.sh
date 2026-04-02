@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
-# RouterCut를 백그라운드(nohup)로 띄웁니다. SMB는 마운트 없이 445로 접속합니다.
+# RouterCut 백그라운드. CIFS 마운트에 root 필요 시 ROUTERCUT_MOUNT_USE_SUDO=1 + sudoers.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
+export ROUTERCUT_MOUNT_USE_SUDO="${ROUTERCUT_MOUNT_USE_SUDO:-1}"
 export ROUTERCUT_DEBUG="${ROUTERCUT_DEBUG:-}"
 export PORT="${PORT:-15777}"
 LOG="${ROUTERCUT_LOG:-${TMPDIR:-/tmp}/routercut.log}"
