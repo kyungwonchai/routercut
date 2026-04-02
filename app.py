@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import atexit
 import io
 import mimetypes
 import os
@@ -16,18 +15,11 @@ from flask import Flask, jsonify, render_template, request, send_file
 from database import connect, get_smb_credentials, get_setting, init_db, set_setting
 from pivot import build_pivot_rows, filter_ng_only
 from scanner import scan_host
-from smb_mount import (
-    ensure_mounted,
-    force_umount_host,
-    mount_point,
-    release_mounted,
-    umount_all,
-)
+from smb_remote import register_smb, smb_read_bytes, unc_join, unc_root
 
 APP_DIR = Path(__file__).resolve().parent
 
 app = Flask(__name__)
-atexit.register(umount_all)
 app.config["JSON_AS_ASCII"] = False
 
 _db: sqlite3.Connection | None = None
@@ -67,6 +59,31 @@ def _image_abspath(host: sqlite3.Row, folder_date: str, filename: str) -> Path |
     if full.is_file():
         return full
     return None
+
+
+def _image_smb_load(
+    conn: sqlite3.Connection,
+    host: sqlite3.Row,
+    folder_date: str,
+    file: str,
+) -> bytes | None:
+    if not re.fullmatch(r"\d{8}", folder_date or ""):
+        return None
+    share = (host["smb_share"] or "").strip()
+    if not share:
+        return None
+    fn = os.path.basename(str(file).replace("\\", "/"))
+    if not fn or fn in (".", "..") or ".." in fn:
+        return None
+    ip = str(host["ip"]).strip()
+    root_unc = unc_root(ip, share)
+    img_unc = unc_join(root_unc, folder_date, "Image", fn)
+    u, p, d = get_smb_credentials(conn)
+    try:
+        register_smb(ip, u, p, d)
+        return smb_read_bytes(img_unc)
+    except Exception:
+        return None
 
 
 @app.route("/")
@@ -136,12 +153,6 @@ def api_hosts_create():
     except sqlite3.IntegrityError:
         return jsonify({"ok": False, "error": "duplicate ip"}), 409
     hid = cur.lastrowid
-    if smb_share:
-        conn.execute(
-            "UPDATE hosts SET local_root = ? WHERE id = ?",
-            (str(mount_point(hid)), hid),
-        )
-        conn.commit()
     row = _host_row(conn, hid)
     return jsonify({"ok": True, "host": dict(row)})
 
@@ -167,7 +178,7 @@ def api_hosts_patch(host_id: int):
 
         if smb_v:
             fields.extend(["smb_share = ?", "local_root = ?"])
-            vals.extend([smb_v, str(mount_point(host_id))])
+            vals.extend([smb_v, "."])
         elif "smb_share" in data and not smb_v and lr_v:
             fields.extend(["smb_share = ?", "local_root = ?"])
             vals.extend([None, lr_v])
@@ -197,7 +208,6 @@ def api_hosts_patch(host_id: int):
 
 @app.delete("/api/hosts/<int:host_id>")
 def api_hosts_delete(host_id: int):
-    force_umount_host(host_id)
     conn = get_db()
     conn.execute("DELETE FROM hosts WHERE id = ?", (host_id,))
     conn.commit()
@@ -297,24 +307,15 @@ def api_image():
         return "not found", 404
     use_smb = bool((host["smb_share"] or "").strip())
     if use_smb:
-        u, p, d = get_smb_credentials(conn)
-        ok_m, err_m = ensure_mounted(
-            host, cred_user=u, cred_password=p, cred_domain=d
-        )
-        if not ok_m:
-            return err_m, 500
-    try:
-        path = _image_abspath(host, folder_date, file)
-        if not path:
+        blob = _image_smb_load(conn, host, folder_date, file)
+        if blob is None:
             return "not found", 404
-        if use_smb:
-            blob = path.read_bytes()
-            mime = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
-            return send_file(io.BytesIO(blob), mimetype=mime, as_attachment=False)
-        return send_file(path, as_attachment=False)
-    finally:
-        if use_smb:
-            release_mounted(host_id)
+        mime = mimetypes.guess_type(os.path.basename(file))[0] or "application/octet-stream"
+        return send_file(io.BytesIO(blob), mimetype=mime, as_attachment=False)
+    path = _image_abspath(host, folder_date, file)
+    if not path:
+        return "not found", 404
+    return send_file(path, as_attachment=False)
 
 
 @app.get("/api/export.xlsx")

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import io
 import os
 import re
 import sqlite3
@@ -10,7 +11,7 @@ from pathlib import Path
 import pandas as pd
 
 from database import get_smb_credentials
-from smb_mount import ensure_mounted, release_mounted
+from smb_remote import register_smb, smb_listdir, smb_read_bytes, smb_try_stat, unc_join, unc_root
 
 RE_DATE_DIR = re.compile(r"^\d{8}$")
 RE_PATH_IMAGE = re.compile(r"[/\\]Image[/\\]([^/\\]+)$", re.I)
@@ -33,7 +34,13 @@ def _normalize_columns(df: pd.DataFrame) -> pd.DataFrame | None:
     return df
 
 
-def _parse_image_basename(path_val: str, folder_date: str, image_dir: Path) -> str | None:
+def _parse_image_basename(
+    path_val: str,
+    folder_date: str,
+    *,
+    image_dir: Path | None = None,
+    smb_image_prefix: str | None = None,
+) -> str | None:
     if path_val is None or (isinstance(path_val, float) and pd.isna(path_val)):
         return None
     s = str(path_val).strip()
@@ -55,8 +62,13 @@ def _parse_image_basename(path_val: str, folder_date: str, image_dir: Path) -> s
             fn = os.path.basename(s)
     if not fn:
         return None
-    cand = image_dir / fn
-    if cand.is_file():
+    if image_dir is not None:
+        cand = image_dir / fn
+        if cand.is_file():
+            return fn
+        return fn
+    if smb_image_prefix is not None:
+        _ = smb_try_stat(unc_join(smb_image_prefix, fn))
         return fn
     return fn
 
@@ -116,7 +128,9 @@ def _scan_host_run(conn: sqlite3.Connection, host_id: int, host: sqlite3.Row) ->
                 value = "" if pd.isna(row["VALUE"]) else str(row["VALUE"]).strip()
                 spec = "" if pd.isna(row["SPEC"]) else str(row["SPEC"]).strip()
                 path_raw = row["PATH"]
-                img_fn = _parse_image_basename(path_raw, name, image_dir)
+                img_fn = _parse_image_basename(
+                    path_raw, name, image_dir=image_dir
+                )
             except (TypeError, ValueError, KeyError):
                 continue
 
@@ -160,17 +174,141 @@ def _scan_host_run(conn: sqlite3.Connection, host_id: int, host: sqlite3.Row) ->
     return {"ok": True, "error": None, "rows": total_upsert, "folders": touched_folders}
 
 
+def _smb_share(host: sqlite3.Row) -> str:
+    v = host["smb_share"]
+    return (v or "").strip() if v is not None else ""
+
+
+def _scan_smb_run(
+    conn: sqlite3.Connection,
+    host_id: int,
+    host: sqlite3.Row,
+    user: str,
+    password: str,
+    domain: str,
+) -> dict:
+    ip = str(host["ip"]).strip()
+    share = _smb_share(host)
+    root_unc = unc_root(ip, share)
+    try:
+        register_smb(ip, user, password, domain)
+        entries = smb_listdir(root_unc)
+    except Exception as e:
+        err = str(e) or type(e).__name__
+        return {
+            "ok": False,
+            "error": f"SMB 접속/목록 실패 (마운트 없이 연결): {err}. "
+            f"IP·공유 이름·계정·445방화벽·서명(ROUTERCUT_SMB_REQUIRE_SIGNING) 확인.",
+            "rows": 0,
+            "folders": [],
+        }
+
+    total_upsert = 0
+    touched_folders: list[str] = []
+
+    for name in entries:
+        if not RE_DATE_DIR.match(name):
+            continue
+        csv_unc = unc_join(root_unc, name, "Result.csv")
+        try:
+            raw = smb_read_bytes(csv_unc)
+        except OSError:
+            continue
+
+        img_prefix = unc_join(root_unc, name, "Image")
+
+        try:
+            df = pd.read_csv(io.BytesIO(raw), encoding="utf-8-sig", on_bad_lines="skip")
+        except UnicodeDecodeError:
+            df = pd.read_csv(io.BytesIO(raw), encoding="cp949", on_bad_lines="skip")
+        except Exception as e:
+            return {
+                "ok": False,
+                "error": f"{csv_unc}: {e}",
+                "rows": total_upsert,
+                "folders": touched_folders,
+            }
+
+        df = _normalize_columns(df)
+        if df is None:
+            continue
+
+        conn.execute(
+            "DELETE FROM records WHERE host_id = ? AND folder_date = ?",
+            (host_id, name),
+        )
+
+        rows_batch: list[tuple] = []
+        for _, row in df.iterrows():
+            try:
+                model = str(row["MODEL"])[:50] if pd.notna(row["MODEL"]) else ""
+                time_s = str(row["TIME"]).strip()[:32]
+                barcode = re.sub(r"\D", "", str(row["BARCODE"]))[:20]
+                cam = int(float(row["CAM"]))
+                roi = int(float(row["ROI"]))
+                result = str(row["RESULT"]).strip().upper()
+                if result not in ("OK", "NG"):
+                    if "NG" in result:
+                        result = "NG"
+                    else:
+                        result = "OK"
+                value = "" if pd.isna(row["VALUE"]) else str(row["VALUE"]).strip()
+                spec = "" if pd.isna(row["SPEC"]) else str(row["SPEC"]).strip()
+                path_raw = row["PATH"]
+                img_fn = _parse_image_basename(
+                    path_raw, name, smb_image_prefix=img_prefix
+                )
+            except (TypeError, ValueError, KeyError):
+                continue
+
+            rows_batch.append(
+                (
+                    host_id,
+                    name,
+                    model,
+                    time_s,
+                    barcode,
+                    cam,
+                    roi,
+                    result,
+                    value,
+                    spec,
+                    img_fn,
+                    csv_unc,
+                )
+            )
+
+        conn.executemany(
+            """
+            INSERT INTO records (
+                host_id, folder_date, model, time, barcode, cam, roi,
+                result, value, spec, image_file, source_csv
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(host_id, folder_date, time, barcode, cam, roi) DO UPDATE SET
+                model = excluded.model,
+                result = excluded.result,
+                value = excluded.value,
+                spec = excluded.spec,
+                image_file = COALESCE(excluded.image_file, records.image_file),
+                source_csv = excluded.source_csv
+            """,
+            rows_batch,
+        )
+        total_upsert += len(rows_batch)
+        touched_folders.append(name)
+
+    conn.commit()
+    return {"ok": True, "error": None, "rows": total_upsert, "folders": touched_folders}
+
+
 def scan_host(conn: sqlite3.Connection, host_id: int) -> dict:
     cur = conn.execute("SELECT * FROM hosts WHERE id = ?", (host_id,))
     host = cur.fetchone()
     if not host:
         return {"ok": False, "error": "host not found", "rows": 0, "folders": []}
 
-    u, p, d = get_smb_credentials(conn)
-    ok_m, err_m = ensure_mounted(host, cred_user=u, cred_password=p, cred_domain=d)
-    if not ok_m:
-        return {"ok": False, "error": err_m, "rows": 0, "folders": []}
-    try:
-        return _scan_host_run(conn, host_id, host)
-    finally:
-        release_mounted(host_id)
+    if _smb_share(host):
+        u, p, d = get_smb_credentials(conn)
+        return _scan_smb_run(conn, host_id, host, u, p, d)
+
+    return _scan_host_run(conn, host_id, host)

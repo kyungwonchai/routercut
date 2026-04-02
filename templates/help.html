@@ -13,8 +13,6 @@
       padding: 12px 14px; overflow-x: auto; font-size: 0.88rem; border-radius: 6px;
     }
     .doc code { font-size: 0.92em; }
-    .doc ol.steps { padding-left: 1.2rem; }
-    .doc ol.steps li { margin: 0.5em 0; }
     .doc .muted { color: var(--muted); font-size: 0.9rem; }
     .back { margin-bottom: 1rem; }
   </style>
@@ -23,45 +21,40 @@
 <div class="doc">
   <p class="back"><a href="/">← 메인으로</a></p>
   <h1>RouterCut — 우분투에서 일반 사용자로 돌리기</h1>
-  <p class="muted">앱은 <strong>로그인한 사용자(예: kw)</strong>로 실행합니다. root로 전체 앱을 띄울 필요는 없고, SMB 마운트만 <code>sudo</code>로 허용하면 됩니다.</p>
+
+  <h2>왜 예전에 400 / mount 오류가 났나</h2>
+  <p>리눅스에서 <code>mount -t cifs</code> 는 <strong>커널에 “이 SMB 공유를 내 폴더에 붙여라”</strong>라고 요청하는 것이라, 보통 <strong>root 권한(CAP_SYS_ADMIN)</strong>이 필요합니다. 일반 유저로 앱만 돌리면 “permission denied”, “mount system call failed” 류 메시지와 함께 스캔 API가 <strong>400</strong>을 내기 쉽습니다.</p>
+  <p><strong>지금 버전은 마운트를 쓰지 않습니다.</strong> Python 패키지 <code>smbprotocol</code>으로 <strong>SMB 프로토콜(445포트)만 직접</strong> 연결해 <code>Result.csv</code>·이미지를 읽습니다. 그래서 <strong>sudo 없이</strong> 같은 유저 계정으로 실행하면 됩니다.</p>
 
   <h2>1. 패키지 설치</h2>
   <pre>sudo apt update
-sudo apt install -y python3 python3-pip python3-venv cifs-utils</pre>
-  <p class="muted">프로젝트 폴더에서 <code>pip install -r requirements.txt</code> (또는 venv 사용).</p>
-
-  <h2>2. mount / umount 를 비밀번호 없이 허용 (sudoers)</h2>
-  <p>아래에서 <code>kw</code>를 본인 계정 이름으로 바꿉니다.</p>
-  <pre>sudo visudo -f /etc/sudoers.d/routercut</pre>
-  <p>파일에 한 줄 추가:</p>
-  <pre>kw ALL=(root) NOPASSWD: /usr/bin/mount, /usr/bin/umount, /bin/mount, /bin/umount</pre>
-  <p class="muted">저장 후 권한: <code>sudo chmod 440 /etc/sudoers.d/routercut</code> (visudo가 보통 맞춰 줌).</p>
-
-  <h2>3. 앱 실행 환경 변수</h2>
-  <p>마운트 시 <code>sudo -n</code>을 쓰려면:</p>
-  <pre>export ROUTERCUT_MOUNT_USE_SUDO=1</pre>
-  <p>SMB 계정은 웹 화면 <strong>「SMB 로그인 설정」</strong>에서 저장합니다. 로컬 DB 파일(<code>data/routercut.db</code>)에만 들어갑니다.</p>
-  <p class="muted">특수 도메인이 필요하면 서버에서만 <code>ROUTERCUT_SMB_DOMAIN</code> 환경 변수를 쓸 수 있습니다(보통 불필요).</p>
-
-  <h2>4. 포트와 디버그</h2>
-  <p>기본 포트는 <strong>15777</strong>입니다. 바꾸려면:</p>
-  <pre>export PORT=15777</pre>
-  <p>디버그(자동 리로드)는 기본 <strong>꺼짐</strong>. 켤 때만:</p>
-  <pre>export ROUTERCUT_DEBUG=1</pre>
-
-  <h2>5. 실행 방법</h2>
-  <p>포그라운드(터미널에서 테스트):</p>
+sudo apt install -y python3 python3-pip python3-venv</pre>
+  <p class="muted"><code>cifs-utils</code>는 더 이상 필수가 아닙니다(마운트 안 함).</p>
   <pre>cd /path/to/routercut
-export ROUTERCUT_MOUNT_USE_SUDO=1
+pip install -r requirements.txt</pre>
+  <p class="muted">가상환경(<code>python3 -m venv .venv</code>) 쓰는 것을 권장합니다.</p>
+
+  <h2>2. 방화벽 · 네트워크</h2>
+  <p>PC에서 장비(또는 파일 서버)로 <strong>TCP 445</strong>가 열려 있어야 합니다. 장비 쪽 Windows 방화벽에서 “파일 및 프린터 공유” 허용 여부도 확인하세요.</p>
+
+  <h2>3. SMB 계정</h2>
+  <p>웹 화면 <strong>「SMB 로그인 설정」</strong>에 사용자·비밀번호를 넣습니다. 저장 위치는 이 PC의 <code>data/routercut.db</code> 뿐입니다.</p>
+  <p class="muted">일부 장비만 서명을 강제하면 터미널에서 <code>export ROUTERCUT_SMB_REQUIRE_SIGNING=1</code> 후 앱을 다시 실행해 볼 수 있습니다(기본은 끔에 가깝게 두어 호환 우선).</p>
+
+  <h2>4. 포트·디버그</h2>
+  <p>앱 기본 포트 <strong>15777</strong>. 바꾸려면 <code>export PORT=원하는포트</code>.</p>
+  <p>디버그(리로더)는 기본 꺼짐. 필요 시만 <code>export ROUTERCUT_DEBUG=1</code>.</p>
+
+  <h2>5. 실행</h2>
+  <pre>cd /path/to/routercut
 python3 app.py</pre>
-  <p>브라우저: <code>http://본인PC_IP:15777</code></p>
+  <p>브라우저: <code>http://이_PC_IP:15777</code></p>
   <p>백그라운드:</p>
-  <pre>cd /path/to/routercut
-./scripts/run-background.sh</pre>
-  <p class="muted">로그 기본: <code>/tmp/routercut.log</code> · PID: <code>/tmp/routercut.pid</code></p>
+  <pre>./scripts/run-background.sh</pre>
+  <p class="muted">로그: <code>/tmp/routercut.log</code> · PID: <code>/tmp/routercut.pid</code></p>
 
-  <h2>6. SMB 경로 정리</h2>
-  <p>Windows에서 <code>\\10.56.164.91\Result2</code> 이면, 리눅스 마운트 대상은 <code>//10.56.164.91/Result2</code> 한 덩어리입니다. 그 공유 루트 바로 아래에 <code>yyyyMMdd/Result.csv</code> 가 있다고 봅니다.</p>
+  <h2>6. SMB 경로</h2>
+  <p>Windows <code>\\10.56.164.91\Result2</code> 와 같이 쓰면, 앱에는 IP <code>10.56.164.91</code>, 공유 이름 <code>Result2</code> 로만 넣습니다. 그 아래에 <code>yyyyMMdd/Result.csv</code> 구조가 있다고 봅니다.</p>
 </div>
 </body>
 </html>

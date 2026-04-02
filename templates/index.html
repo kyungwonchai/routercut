@@ -39,8 +39,9 @@
   <section class="panel">
     <h2>SMB 로그인 설정</h2>
     <p style="margin:0 0 10px;font-size:0.85rem;color:var(--muted)">
-      공유 폴더 계정이 있으면 여기 입력합니다. 비밀번호는 이 PC의 DB에만 저장됩니다.
-      비밀번호 칸을 비운 채「설정 저장」하면 기존 비밀번호를 유지합니다.
+      공유 폴더 계정이 있으면 여기 입력합니다. 아이디·비밀번호는 이 머신의 SQLite 파일
+      <code>data/routercut.db</code> 안 <code>app_settings</code> 테이블에만 저장되며,
+      인터넷으로 전송되지 않습니다. 비밀번호 칸을 비운 채「설정 저장」하면 예전 비밀번호를 유지합니다.
     </p>
     <div class="grid-form">
       <label class="field">SMB 사용자 이름
@@ -59,7 +60,7 @@
   <section class="panel">
     <h2>장비 등록 · SMB</h2>
     <p style="margin:0 0 10px;font-size:0.85rem;color:var(--muted)">
-      Windows <code>\\IP\공유이름</code> → 리눅스 <code>//IP/공유이름</code> 마운트. 위에서 SMB 로그인을 넣고, 여기서 IP·공유 이름만 등록합니다. 우분투 준비는 <a href="/help" target="_blank" rel="noopener">설명서</a> 참고.
+      Windows <code>\\IP\공유이름</code> 과 같은 공유에, 앱이 <strong>마운트 없이</strong> SMB(445)로 직접 붙습니다. 위에서 SMB 로그인을 넣고 IP·공유 이름만 등록하세요. 안내는 <a href="/help" target="_blank" rel="noopener">설명서</a>.
     </p>
     <div class="grid-form">
       <label class="field">IP
