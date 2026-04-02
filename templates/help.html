@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <title>RouterCut 설명서 · 우분투</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}"/>
+  <style>
+    .doc { max-width: 52rem; margin: 0 auto; padding: 20px 18px 48px; line-height: 1.55; }
+    .doc h2 { margin-top: 1.6em; font-size: 1.05rem; border-bottom: 1px solid var(--border); padding-bottom: 6px; }
+    .doc pre {
+      background: var(--bg2); border: 1px solid var(--border);
+      padding: 12px 14px; overflow-x: auto; font-size: 0.88rem; border-radius: 6px;
+    }
+    .doc code { font-size: 0.92em; }
+    .doc ol.steps { padding-left: 1.2rem; }
+    .doc ol.steps li { margin: 0.5em 0; }
+    .doc .muted { color: var(--muted); font-size: 0.9rem; }
+    .back { margin-bottom: 1rem; }
+  </style>
+</head>
+<body>
+<div class="doc">
+  <p class="back"><a href="/">← 메인으로</a></p>
+  <h1>RouterCut — 우분투에서 일반 사용자로 돌리기</h1>
+  <p class="muted">앱은 <strong>로그인한 사용자(예: kw)</strong>로 실행합니다. root로 전체 앱을 띄울 필요는 없고, SMB 마운트만 <code>sudo</code>로 허용하면 됩니다.</p>
+
+  <h2>1. 패키지 설치</h2>
+  <pre>sudo apt update
+sudo apt install -y python3 python3-pip python3-venv cifs-utils</pre>
+  <p class="muted">프로젝트 폴더에서 <code>pip install -r requirements.txt</code> (또는 venv 사용).</p>
+
+  <h2>2. mount / umount 를 비밀번호 없이 허용 (sudoers)</h2>
+  <p>아래에서 <code>kw</code>를 본인 계정 이름으로 바꿉니다.</p>
+  <pre>sudo visudo -f /etc/sudoers.d/routercut</pre>
+  <p>파일에 한 줄 추가:</p>
+  <pre>kw ALL=(root) NOPASSWD: /usr/bin/mount, /usr/bin/umount, /bin/mount, /bin/umount</pre>
+  <p class="muted">저장 후 권한: <code>sudo chmod 440 /etc/sudoers.d/routercut</code> (visudo가 보통 맞춰 줌).</p>
+
+  <h2>3. 앱 실행 환경 변수</h2>
+  <p>마운트 시 <code>sudo -n</code>을 쓰려면:</p>
+  <pre>export ROUTERCUT_MOUNT_USE_SUDO=1</pre>
+  <p>SMB 계정은 웹 화면 <strong>「SMB 로그인 설정」</strong>에서 저장해도 되고, 대신 환경 변수로 줄 수도 있습니다.</p>
+  <pre>export ROUTERCUT_SMB_USER="도메인\\사용자"   # 선택
+export ROUTERCUT_SMB_PASSWORD="..."           # 선택</pre>
+
+  <h2>4. 포트와 디버그</h2>
+  <p>기본 포트는 <strong>15777</strong>입니다. 바꾸려면:</p>
+  <pre>export PORT=15777</pre>
+  <p>디버그(자동 리로드)는 기본 <strong>꺼짐</strong>. 켤 때만:</p>
+  <pre>export ROUTERCUT_DEBUG=1</pre>
+
+  <h2>5. 실행 방법</h2>
+  <p>포그라운드(터미널에서 테스트):</p>
+  <pre>cd /path/to/routercut
+export ROUTERCUT_MOUNT_USE_SUDO=1
+python3 app.py</pre>
+  <p>브라우저: <code>http://본인PC_IP:15777</code></p>
+  <p>백그라운드:</p>
+  <pre>cd /path/to/routercut
+./scripts/run-background.sh</pre>
+  <p class="muted">로그 기본: <code>/tmp/routercut.log</code> · PID: <code>/tmp/routercut.pid</code></p>
+
+  <h2>6. SMB 경로 정리</h2>
+  <p>Windows에서 <code>\\10.56.164.91\Result2</code> 이면, 리눅스 마운트 대상은 <code>//10.56.164.91/Result2</code> 한 덩어리입니다. 그 공유 루트 바로 아래에 <code>yyyyMMdd/Result.csv</code> 가 있다고 봅니다.</p>
+</div>
+</body>
+</html>

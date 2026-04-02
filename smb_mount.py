@@ -44,7 +44,13 @@ def _smb_share(host_row) -> str:
     return (v or "").strip() if v is not None else ""
 
 
-def ensure_mounted(host_row) -> tuple[bool, str]:
+def ensure_mounted(
+    host_row,
+    *,
+    cred_user: str = "",
+    cred_password: str = "",
+    cred_domain: str = "",
+) -> tuple[bool, str]:
     """Increment refcount and mount //ip/share if needed. No-op for non-SMB hosts."""
     share = _smb_share(host_row)
     if not share:
@@ -64,9 +70,9 @@ def ensure_mounted(host_row) -> tuple[bool, str]:
 
         uid = os.getuid()
         gid = os.getgid()
-        domain = os.environ.get("ROUTERCUT_SMB_DOMAIN", "").strip()
-        user = os.environ.get("ROUTERCUT_SMB_USER", "").strip()
-        password = os.environ.get("ROUTERCUT_SMB_PASSWORD", "")
+        domain = cred_domain.strip()
+        user = cred_user.strip()
+        password = cred_password
 
         opt_parts: list[str] = [f"uid={uid}", f"gid={gid}", "iocharset=utf8", "vers=3.0"]
         if domain:

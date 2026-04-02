@@ -9,6 +9,7 @@ from pathlib import Path
 
 import pandas as pd
 
+from database import get_smb_credentials
 from smb_mount import ensure_mounted, release_mounted
 
 RE_DATE_DIR = re.compile(r"^\d{8}$")
@@ -165,7 +166,8 @@ def scan_host(conn: sqlite3.Connection, host_id: int) -> dict:
     if not host:
         return {"ok": False, "error": "host not found", "rows": 0, "folders": []}
 
-    ok_m, err_m = ensure_mounted(host)
+    u, p, d = get_smb_credentials(conn)
+    ok_m, err_m = ensure_mounted(host, cred_user=u, cred_password=p, cred_domain=d)
     if not ok_m:
         return {"ok": False, "error": err_m, "rows": 0, "folders": []}
     try:

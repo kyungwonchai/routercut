@@ -13,7 +13,7 @@ from pathlib import Path
 import pandas as pd
 from flask import Flask, jsonify, render_template, request, send_file
 
-from database import connect, init_db
+from database import connect, get_smb_credentials, get_setting, init_db, set_setting
 from pivot import build_pivot_rows, filter_ng_only
 from scanner import scan_host
 from smb_mount import (
@@ -72,6 +72,37 @@ def _image_abspath(host: sqlite3.Row, folder_date: str, filename: str) -> Path |
 @app.route("/")
 def index():
     return render_template("index.html")
+
+
+@app.route("/help")
+def help_page():
+    return render_template("help.html")
+
+
+@app.get("/api/settings")
+def api_settings_get():
+    conn = get_db()
+    return jsonify(
+        {
+            "smb_user": get_setting(conn, "smb_user", ""),
+            "smb_domain": get_setting(conn, "smb_domain", ""),
+            "smb_password_set": bool(get_setting(conn, "smb_password", "")),
+        }
+    )
+
+
+@app.patch("/api/settings")
+def api_settings_patch():
+    data = request.get_json(force=True, silent=True) or {}
+    conn = get_db()
+    if "smb_user" in data:
+        set_setting(conn, "smb_user", (data["smb_user"] or "").strip())
+    if "smb_domain" in data:
+        set_setting(conn, "smb_domain", (data["smb_domain"] or "").strip())
+    if "smb_password" in data:
+        set_setting(conn, "smb_password", data["smb_password"] or "")
+    conn.commit()
+    return jsonify({"ok": True})
 
 
 @app.get("/api/hosts")
@@ -269,7 +300,10 @@ def api_image():
         return "not found", 404
     use_smb = bool((host["smb_share"] or "").strip())
     if use_smb:
-        ok_m, err_m = ensure_mounted(host)
+        u, p, d = get_smb_credentials(conn)
+        ok_m, err_m = ensure_mounted(
+            host, cred_user=u, cred_password=p, cred_domain=d
+        )
         if not ok_m:
             return err_m, 500
     try:
@@ -323,7 +357,7 @@ if __name__ == "__main__":
     _dbg = os.environ.get("ROUTERCUT_DEBUG", "").lower() in ("1", "true", "yes")
     app.run(
         host="0.0.0.0",
-        port=int(os.environ.get("PORT", "5000")),
+        port=int(os.environ.get("PORT", "15777")),
         debug=_dbg,
         use_reloader=_dbg,
     )

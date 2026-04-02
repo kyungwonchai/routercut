@@ -6,6 +6,7 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 export ROUTERCUT_MOUNT_USE_SUDO="${ROUTERCUT_MOUNT_USE_SUDO:-1}"
 export ROUTERCUT_DEBUG="${ROUTERCUT_DEBUG:-}"
+export PORT="${PORT:-15777}"
 LOG="${ROUTERCUT_LOG:-${TMPDIR:-/tmp}/routercut.log}"
 PIDFILE="${ROUTERCUT_PIDFILE:-${TMPDIR:-/tmp}/routercut.pid}"
 export PYTHONUNBUFFERED=1
